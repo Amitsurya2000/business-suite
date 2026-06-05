@@ -2,7 +2,16 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { VOICE_LAYER, REFLECT_SYSTEM, RESEARCH_SYSTEM, TAMIL_ENFORCER } from "@/lib/voice-layer";
 import { BusinessProfile } from "@/lib/profile";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+// Support multiple Gemini API keys for rotation: when one key's quota is
+// exhausted (429), the next key is tried automatically. Add as many as needed
+// via GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3 …
+const GEMINI_KEYS = [
+  process.env.GEMINI_API_KEY,
+  process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3,
+].filter((k): k is string => Boolean(k));
+
+const geminiClients = GEMINI_KEYS.map((key) => new GoogleGenerativeAI(key));
 
 // Module prompt configs
 function getModulePrompt(
@@ -124,9 +133,11 @@ function isQuotaExceeded(msg: string): boolean {
   );
 }
 
-// Generate with resilience: retry the requested model on transient 503/429
-// (Gemini overload / rate limit), then fall back to a less-loaded model if it
-// stays unavailable. Non-overload errors fail fast.
+// Generate with resilience:
+//   1. If the current API key's quota is exhausted (429) → rotate to the next key.
+//   2. If a model is transiently overloaded (503) → retry, then fall back to a
+//      lighter model on the same key.
+//   3. Non-retryable errors fail fast.
 async function generateWithFallback(
   modelName: string,
   systemInstruction: string,
@@ -140,23 +151,37 @@ async function generateWithFallback(
   );
 
   let lastErr: unknown;
-  for (const name of candidates) {
-    const model = genAI.getGenerativeModel({ model: name, systemInstruction });
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const result = await model.generateContent({ contents, generationConfig });
-        return result.response.text();
-      } catch (err: unknown) {
-        lastErr = err;
-        const msg = err instanceof Error ? err.message : "";
-        // Quota errors won't clear by retrying or switching models — fail fast.
-        if (isQuotaExceeded(msg)) throw err;
-        if (!isOverloaded(msg)) throw err; // not transient — don't waste retries
-        console.log(`Gemini ${name} overloaded — attempt ${attempt}/2`);
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 2000 * attempt));
-        // else: fall through to the next candidate model
+  for (let k = 0; k < geminiClients.length; k++) {
+    const client = geminiClients[k];
+    let quotaHit = false;
+
+    for (const name of candidates) {
+      const model = client.getGenerativeModel({ model: name, systemInstruction });
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const result = await model.generateContent({ contents, generationConfig });
+          return result.response.text();
+        } catch (err: unknown) {
+          lastErr = err;
+          const msg = err instanceof Error ? err.message : "";
+          if (isQuotaExceeded(msg)) {
+            console.log(`Gemini key #${k + 1} quota exhausted — rotating key`);
+            quotaHit = true;
+            break; // stop trying models on this key; move to the next key
+          }
+          if (!isOverloaded(msg)) throw err; // not transient — don't waste retries
+          console.log(`Gemini ${name} overloaded — attempt ${attempt}/2`);
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 2000 * attempt));
+          // else: fall through to the next candidate model
+        }
       }
+      if (quotaHit) break;
     }
+
+    if (quotaHit) continue; // try the next API key
+    // Reached here without quota error and without returning → all models were
+    // overloaded. Another key won't fix model overload, so stop.
+    break;
   }
   throw lastErr ?? new Error("All models unavailable");
 }
