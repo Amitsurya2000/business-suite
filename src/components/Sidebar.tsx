@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useProfile } from "@/context/ProfileContext";
+import { useAuth } from "@/context/AuthContext";
 import { completedCount } from "@/lib/profile";
 import {
   LayoutDashboard,
@@ -16,6 +17,7 @@ import {
   Mic,
   Presentation,
   Check,
+  LogOut,
 } from "lucide-react";
 
 const navItems = [
@@ -34,6 +36,7 @@ const navItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const { profile, isLoaded } = useProfile();
+  const { user, signOut } = useAuth();
   const done = isLoaded ? completedCount(profile) : 0;
 
   const isCompleted = (moduleKey: string | null) => {
@@ -127,6 +130,27 @@ export function Sidebar() {
           )}
         </div>
       </div>
+
+      {/* Account */}
+      {user && (
+        <div className="px-4 pb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-full bg-accent-gold/15 flex items-center justify-center text-accent-gold text-xs font-bold flex-shrink-0">
+              {(user.name || user.email).charAt(0).toUpperCase()}
+            </div>
+            <p className="flex-1 truncate text-[11px] text-text-secondary" title={user.email}>
+              {user.email}
+            </p>
+            <button
+              onClick={() => signOut()}
+              title="வெளியேறு"
+              className="text-text-secondary/50 hover:text-accent-red transition-colors flex-shrink-0"
+            >
+              <LogOut size={15} />
+            </button>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

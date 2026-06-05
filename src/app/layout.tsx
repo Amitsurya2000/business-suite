@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/Sidebar";
 import { ProfileProvider } from "@/context/ProfileContext";
+import { AuthProvider } from "@/context/AuthContext";
+import { AuthGate } from "@/components/AuthGate";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,10 +38,14 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen flex bg-bg-primary text-text-primary">
-        <ProfileProvider>
-          <Sidebar />
-          <main className="flex-1 ml-64 min-h-screen">{children}</main>
-        </ProfileProvider>
+        <AuthProvider>
+          <AuthGate>
+            <ProfileProvider>
+              <Sidebar />
+              <main className="flex-1 ml-64 min-h-screen">{children}</main>
+            </ProfileProvider>
+          </AuthGate>
+        </AuthProvider>
       </body>
     </html>
   );

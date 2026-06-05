@@ -239,9 +239,9 @@ export default function Dashboard() {
       {isLoaded && profile.onboarding.completed && (
         <div className="mt-10 flex justify-center">
           <button
-            onClick={() => {
+            onClick={async () => {
               if (confirm("இது உங்கள் எல்லா data-வையும் அழித்து புதிதாக தொடங்கும். உறுதியா?")) {
-                reset();
+                await reset();
                 window.location.reload();
               }
             }}
