@@ -104,30 +104,61 @@ function getModulePrompt(
   return { ...config, model: "gemini-2.5-flash" };
 }
 
-// Auto-retry on 503/429 (Gemini overload or rate limit)
-async function callWithRetry(
-  model: ReturnType<typeof genAI.getGenerativeModel>,
+// Transient server overload — worth retrying / falling back to another model.
+function isOverloaded(msg: string): boolean {
+  return (
+    msg.includes("503") ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("UNAVAILABLE")
+  );
+}
+
+// API-key quota / billing limit (429 RESOURCE_EXHAUSTED). All models share the
+// project's quota, so switching models or retrying quickly won't help.
+function isQuotaExceeded(msg: string): boolean {
+  return (
+    msg.includes("quota") ||
+    msg.includes("billing") ||
+    msg.includes("RESOURCE_EXHAUSTED")
+  );
+}
+
+// Generate with resilience: retry the requested model on transient 503/429
+// (Gemini overload / rate limit), then fall back to a less-loaded model if it
+// stays unavailable. Non-overload errors fail fast.
+async function generateWithFallback(
+  modelName: string,
+  systemInstruction: string,
   contents: { role: string; parts: { text: string }[] }[],
-  generationConfig: { temperature: number; maxOutputTokens: number },
-  maxRetries = 3
+  generationConfig: { temperature: number; maxOutputTokens: number }
 ): Promise<string> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await model.generateContent({ contents, generationConfig });
-      return result.response.text();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "";
-      const isRetryable = msg.includes("503") || msg.includes("429") || msg.includes("high demand") || msg.includes("overloaded");
-      if (isRetryable && attempt < maxRetries) {
-        const delay = attempt * 3000; // 3s, 6s, 9s
-        console.log(`Gemini ${msg.includes("503") ? "503" : "429"} — retry ${attempt}/${maxRetries} in ${delay / 1000}s`);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
+  // Try the requested model first, then a stable fallback. Dedupe in case
+  // the requested model already is the fallback.
+  const candidates = [modelName, "gemini-2.0-flash"].filter(
+    (m, i, arr) => arr.indexOf(m) === i
+  );
+
+  let lastErr: unknown;
+  for (const name of candidates) {
+    const model = genAI.getGenerativeModel({ model: name, systemInstruction });
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const result = await model.generateContent({ contents, generationConfig });
+        return result.response.text();
+      } catch (err: unknown) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : "";
+        // Quota errors won't clear by retrying or switching models — fail fast.
+        if (isQuotaExceeded(msg)) throw err;
+        if (!isOverloaded(msg)) throw err; // not transient — don't waste retries
+        console.log(`Gemini ${name} overloaded — attempt ${attempt}/2`);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 2000 * attempt));
+        // else: fall through to the next candidate model
       }
-      throw err;
     }
   }
-  throw new Error("Max retries exceeded");
+  throw lastErr ?? new Error("All models unavailable");
 }
 
 export async function POST(req: Request) {
@@ -139,13 +170,9 @@ export async function POST(req: Request) {
       module, phase, profile, answers, researchData
     );
 
-    const model = genAI.getGenerativeModel({
-      model: modelName,
-      systemInstruction: system,
-    });
-
-    const text = await callWithRetry(
-      model,
+    const text = await generateWithFallback(
+      modelName,
+      system,
       [{ role: "user", parts: [{ text: user }] }],
       {
         temperature: temp,
@@ -157,6 +184,26 @@ export async function POST(req: Request) {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("Gemini API error:", message);
+    // Gemini API key quota / billing limit reached — needs a fresh key or reset.
+    if (isQuotaExceeded(message)) {
+      return Response.json(
+        {
+          error:
+            "Gemini API key-ன் quota முடிந்துவிட்டது (free limit). சிறிது நேரம் கழித்து முயற்சிக்கவும், அல்லது billing-உடன் புதிய key சேர்க்கவும்.",
+        },
+        { status: 429 }
+      );
+    }
+    // Friendlier message when the models are just busy (transient overload).
+    if (isOverloaded(message)) {
+      return Response.json(
+        {
+          error:
+            "AI இப்போது அதிக பயன்பாட்டில் உள்ளது 😓 சில விநாடிகளில் மீண்டும் முயற்சிக்கவும்.",
+        },
+        { status: 503 }
+      );
+    }
     return Response.json({ error: message }, { status: 500 });
   }
 }
