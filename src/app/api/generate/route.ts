@@ -133,11 +133,11 @@ function isQuotaExceeded(msg: string): boolean {
   );
 }
 
-// Generate with resilience:
-//   1. If the current API key's quota is exhausted (429) → rotate to the next key.
-//   2. If a model is transiently overloaded (503) → retry, then fall back to a
-//      lighter model on the same key.
-//   3. Non-retryable errors fail fast.
+// Generate with resilience. On ANY retryable error — whether a key's quota /
+// rate limit (429) or transient model overload (503) — move on to the next
+// (key × model) combination. A different key or model may succeed, so we never
+// give up early. Two passes give briefly-overloaded keys a second chance.
+// Only non-retryable errors fail fast.
 async function generateWithFallback(
   modelName: string,
   systemInstruction: string,
@@ -151,37 +151,32 @@ async function generateWithFallback(
   );
 
   let lastErr: unknown;
-  for (let k = 0; k < geminiClients.length; k++) {
-    const client = geminiClients[k];
-    let quotaHit = false;
-
-    for (const name of candidates) {
-      const model = client.getGenerativeModel({ model: name, systemInstruction });
-      for (let attempt = 1; attempt <= 2; attempt++) {
+  const MAX_PASSES = 2;
+  for (let pass = 1; pass <= MAX_PASSES; pass++) {
+    for (let k = 0; k < geminiClients.length; k++) {
+      const client = geminiClients[k];
+      for (const name of candidates) {
         try {
+          const model = client.getGenerativeModel({ model: name, systemInstruction });
           const result = await model.generateContent({ contents, generationConfig });
           return result.response.text();
         } catch (err: unknown) {
           lastErr = err;
           const msg = err instanceof Error ? err.message : "";
-          if (isQuotaExceeded(msg)) {
-            console.log(`Gemini key #${k + 1} quota exhausted — rotating key`);
-            quotaHit = true;
-            break; // stop trying models on this key; move to the next key
-          }
-          if (!isOverloaded(msg)) throw err; // not transient — don't waste retries
-          console.log(`Gemini ${name} overloaded — attempt ${attempt}/2`);
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 2000 * attempt));
-          // else: fall through to the next candidate model
+          // Non-retryable error (bad request, auth, etc.) — stop immediately.
+          if (!isQuotaExceeded(msg) && !isOverloaded(msg)) throw err;
+          console.log(
+            `Gemini key #${k + 1} / ${name} unavailable (${
+              isQuotaExceeded(msg) ? "quota" : "overload"
+            }) — trying next`
+          );
+          // fall through: next model, then next key, then next pass
         }
       }
-      if (quotaHit) break;
     }
-
-    if (quotaHit) continue; // try the next API key
-    // Reached here without quota error and without returning → all models were
-    // overloaded. Another key won't fix model overload, so stop.
-    break;
+    // All keys+models failed this pass. Brief wait, then retry once more in
+    // case the limit was a momentary per-minute spike.
+    if (pass < MAX_PASSES) await new Promise((r) => setTimeout(r, 2500));
   }
   throw lastErr ?? new Error("All models unavailable");
 }
