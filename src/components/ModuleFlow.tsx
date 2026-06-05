@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, ReactNode } from "react";
 import { ArrowLeft, Loader2, RefreshCw, Check, ChevronRight, Sparkles, Lock, Copy } from "lucide-react";
 import Link from "next/link";
+import { useProfile } from "@/context/ProfileContext";
 
 export interface QuestionDef {
   id: string;
@@ -180,7 +181,8 @@ export function ModuleFlow({
   const [reflection, setReflection] = useState("");
   const [output, setOutput] = useState(existingOutput || "");
   const [error, setError] = useState("");
-  const [profile, setProfile] = useState<unknown>(null);
+  // Profile comes from the shared (InsForge-backed) context — never null.
+  const { profile } = useProfile();
   const [copied, setCopied] = useState(false);
 
   // Jarvis terminal state
@@ -189,16 +191,6 @@ export function ModuleFlow({
   const stepTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const stepIndexRef = useRef(0);
-
-  // Load profile from localStorage
-  useState(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const raw = localStorage.getItem("business-suite-profile");
-        if (raw) setProfile(JSON.parse(raw));
-      } catch { /* empty */ }
-    }
-  });
 
   // Elapsed time counter during generating phase
   useEffect(() => {
