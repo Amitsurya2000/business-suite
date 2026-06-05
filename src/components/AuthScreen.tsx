@@ -7,7 +7,7 @@ import { Loader2, Mail, Lock, User } from "lucide-react";
 type Mode = "signin" | "signup" | "verify";
 
 export function AuthScreen() {
-  const { signIn, signUp, verifyEmail, resendCode } = useAuth();
+  const { signIn, signInWithGoogle, signUp, verifyEmail, resendCode } = useAuth();
 
   const [mode, setMode] = useState<Mode>("signin");
   const [name, setName] = useState("");
@@ -39,6 +39,18 @@ export function AuthScreen() {
         if (error) setError(error);
       }
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleGoogle() {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    const { error } = await signInWithGoogle();
+    // On success the browser redirects to Google, so we only land here on error.
+    if (error) {
+      setError(error);
       setBusy(false);
     }
   }
@@ -161,6 +173,28 @@ export function AuthScreen() {
             </button>
           </form>
 
+          {/* Google sign-in */}
+          {mode !== "verify" && (
+            <>
+              <div className="flex items-center gap-3 my-4">
+                <div className="flex-1 h-px bg-border-default" />
+                <span className="text-[10px] text-text-secondary/50 uppercase tracking-wider">
+                  அல்லது
+                </span>
+                <div className="flex-1 h-px bg-border-default" />
+              </div>
+              <button
+                type="button"
+                onClick={handleGoogle}
+                disabled={busy}
+                className="w-full flex items-center justify-center gap-2.5 rounded-lg py-2.5 text-sm font-medium bg-bg-card border border-border-default text-text-primary hover:border-accent-gold/40 disabled:opacity-60 transition-colors"
+              >
+                <GoogleIcon />
+                Google-உடன் தொடரவும்
+              </button>
+            </>
+          )}
+
           {/* Footer switches */}
           <div className="mt-5 text-center text-xs text-text-secondary">
             {mode === "signin" && (
@@ -251,5 +285,28 @@ function Field({
         className="w-full rounded-lg bg-bg-card border border-border-default pl-9 pr-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent-gold/50 transition-colors"
       />
     </div>
+  );
+}
+
+function GoogleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
+      <path
+        fill="#FFC107"
+        d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0124 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 01-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"
+      />
+    </svg>
   );
 }

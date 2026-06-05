@@ -20,6 +20,7 @@ interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
+  signInWithGoogle: () => Promise<{ error?: string }>;
   // Returns needsVerification=true when a 6-digit code was emailed.
   signUp: (
     email: string,
@@ -45,9 +46,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   // Rehydrate session on cold load (uses the httpOnly refresh cookie).
+  // Also completes the OAuth flow when we land back with an `insforge_code`.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get("insforge_code");
+      if (code) {
+        // The SPA SDK may auto-exchange too; a duplicate call just no-ops.
+        await insforge.auth.exchangeOAuthCode(code).catch(() => {});
+        url.searchParams.delete("insforge_code");
+        window.history.replaceState({}, "", url.toString());
+      }
       const { data, error } = await insforge.auth.getCurrentUser();
       if (cancelled) return;
       setUser(error ? null : readUser(data?.user));
@@ -65,6 +75,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     if (error) return { error: error.message || "உள்நுழைய முடியவில்லை" };
     setUser(readUser(data?.user));
+    return {};
+  }, []);
+
+  const signInWithGoogle = useCallback(async () => {
+    // Redirects to Google, then back to this origin with ?insforge_code=…,
+    // which the mount effect exchanges for a session.
+    const { error } = await insforge.auth.signInWithOAuth({
+      provider: "google",
+      redirectTo: window.location.origin,
+    });
+    if (error) return { error: error.message || "Google login தோல்வி" };
     return {};
   }, []);
 
@@ -105,7 +126,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, signIn, signUp, verifyEmail, resendCode, signOut }}
+      value={{
+        user,
+        loading,
+        signIn,
+        signInWithGoogle,
+        signUp,
+        verifyEmail,
+        resendCode,
+        signOut,
+      }}
     >
       {children}
     </AuthContext.Provider>
