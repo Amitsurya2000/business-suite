@@ -279,10 +279,22 @@ export async function POST(req: Request) {
     console.error("Gemini API error:", message);
     // Gemini API key quota / billing limit reached — needs a fresh key or reset.
     if (isQuotaExceeded(message)) {
+      // Distinguish a per-day exhaustion (won't clear by waiting a minute) from
+      // a per-minute rate limit.
+      const isDaily = /per\s*day|PerDay/i.test(message);
+      if (isDaily) {
+        return Response.json(
+          {
+            error:
+              "இன்றைய AI free limit முடிந்துவிட்டது 😔 இது நாளை மதியம் ~12:30 PM IST-க்கு refresh ஆகும். (Daily free quota used up — resets ~12:30 PM IST. Enable billing to remove this limit.)",
+          },
+          { status: 429 }
+        );
+      }
       const wait = parseRetrySeconds(message);
       return Response.json(
         {
-          error: `AI கொஞ்சம் busy 😅 தயவுசெய்து ${wait} விநாடிகள் காத்திருந்து மீண்டும் முயற்சிக்கவும். (Please wait ~${wait}s and try again.)`,
+          error: `AI கொஞ்சம் busy 😅 ${wait} விநாடிகள் காத்திருந்து மீண்டும் முயற்சிக்கவும். வேலை செய்யாவிட்டால் இன்றைய free limit முடிந்திருக்கலாம் (~12:30 PM IST-க்கு refresh). (Wait ~${wait}s; if it persists, the daily limit is used up.)`,
           retryAfter: wait,
         },
         { status: 429 }
