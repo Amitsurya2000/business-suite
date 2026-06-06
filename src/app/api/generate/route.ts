@@ -178,7 +178,60 @@ async function generateWithFallback(
     // case the limit was a momentary per-minute spike.
     if (pass < MAX_PASSES) await new Promise((r) => setTimeout(r, 2500));
   }
+
+  // Every Gemini key was rate-limited/overloaded — fall back to Groq (free tier
+  // with a much higher per-minute limit) so the app keeps working. Groq is only
+  // tried if a key is configured; Tamil quality is slightly below Gemini.
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const userText = contents[0]?.parts?.[0]?.text ?? "";
+      console.log("All Gemini keys exhausted — falling back to Groq");
+      return await callGroq(
+        systemInstruction,
+        userText,
+        generationConfig.temperature,
+        generationConfig.maxOutputTokens
+      );
+    } catch (groqErr) {
+      lastErr = groqErr;
+    }
+  }
+
   throw lastErr ?? new Error("All models unavailable");
+}
+
+// Groq fallback via its OpenAI-compatible endpoint. Llama 3.3 70B handles Tamil
+// reasonably and Groq's free tier allows far more requests per minute than the
+// Gemini free tier.
+async function callGroq(
+  systemInstruction: string,
+  userText: string,
+  temperature: number,
+  maxTokens: number
+): Promise<string> {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: userText },
+      ],
+      temperature,
+      max_tokens: Math.min(maxTokens, 8000),
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error("Groq returned an empty response");
+  return text;
 }
 
 export async function POST(req: Request) {
