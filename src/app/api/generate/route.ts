@@ -189,9 +189,10 @@ async function generateWithFallback(
   // Every Gemini key was rate-limited/overloaded — fall back to Groq (free tier
   // with a much higher per-minute limit) so the app keeps working. Groq is only
   // tried if a key is configured; Tamil quality is slightly below Gemini.
+  const userText = contents[0]?.parts?.[0]?.text ?? "";
+
   if (process.env.GROQ_API_KEY) {
     try {
-      const userText = contents[0]?.parts?.[0]?.text ?? "";
       console.log("All Gemini keys exhausted — falling back to Groq");
       return await callGroq(
         systemInstruction,
@@ -201,6 +202,21 @@ async function generateWithFallback(
       );
     } catch (groqErr) {
       lastErr = groqErr;
+    }
+  }
+
+  // Final fallback: Cerebras (separate free quota, high limits).
+  if (process.env.CEREBRAS_API_KEY) {
+    try {
+      console.log("Groq unavailable — falling back to Cerebras");
+      return await callCerebras(
+        systemInstruction,
+        userText,
+        generationConfig.temperature,
+        generationConfig.maxOutputTokens
+      );
+    } catch (cbErr) {
+      lastErr = cbErr;
     }
   }
 
@@ -252,6 +268,39 @@ async function callGroq(
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content;
   if (!text) throw new Error("Groq returned an empty response");
+  return text;
+}
+
+// Cerebras fallback (OpenAI-compatible). gpt-oss-120b handles Tamil well and
+// Cerebras's free tier has high per-minute/day limits on a separate quota.
+async function callCerebras(
+  systemInstruction: string,
+  userText: string,
+  temperature: number,
+  maxTokens: number
+): Promise<string> {
+  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-oss-120b",
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: userText },
+      ],
+      temperature,
+      max_tokens: Math.min(maxTokens, 8000),
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Cerebras ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error("Cerebras returned an empty response");
   return text;
 }
 
