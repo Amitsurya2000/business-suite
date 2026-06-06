@@ -130,10 +130,13 @@ function isQuotaExceeded(msg: string): boolean {
     msg.includes("quota") ||
     msg.includes("billing") ||
     msg.includes("RESOURCE_EXHAUSTED") ||
-    // Groq rate-limit (429) messages — tokens/requests per minute.
+    // Groq rate-limit (429) messages — tokens/requests per minute or day.
     msg.includes("Rate limit reached") ||
     msg.includes("tokens per minute") ||
-    msg.includes("TPM")
+    msg.includes("tokens per day") ||
+    msg.includes("TPM") ||
+    msg.includes("TPD") ||
+    msg.includes("RPD")
   );
 }
 
@@ -155,7 +158,6 @@ async function generateWithFallback(
   );
 
   let lastErr: unknown;
-  let sawDaily = false; // any Gemini key hit its per-DAY cap (won't clear soon)
   const MAX_PASSES = 2;
   for (let pass = 1; pass <= MAX_PASSES; pass++) {
     for (let k = 0; k < geminiClients.length; k++) {
@@ -168,7 +170,6 @@ async function generateWithFallback(
         } catch (err: unknown) {
           lastErr = err;
           const msg = err instanceof Error ? err.message : "";
-          if (/per\s*day|PerDay/i.test(msg)) sawDaily = true;
           // Non-retryable error (bad request, auth, etc.) — stop immediately.
           if (!isQuotaExceeded(msg) && !isOverloaded(msg)) throw err;
           console.log(
@@ -206,12 +207,17 @@ async function generateWithFallback(
   // Tag the failure so the API can show the right short message:
   // "daily" → Gemini's per-day cap is hit (wait until the reset);
   // "minute" → a transient per-minute/token rate limit (wait ~60s).
+  // Base the message on what actually blocked the request LAST (usually Groq,
+  // since Gemini falls back to it). Only a per-DAY cap won't clear within a
+  // minute; per-minute/token limits recover in ~60s.
   const finalMsg = lastErr instanceof Error ? lastErr.message : "";
   const e = new Error(finalMsg || "All models unavailable") as Error & {
     limitKind?: "daily" | "minute";
   };
-  if (sawDaily) e.limitKind = "daily";
-  else if (isQuotaExceeded(finalMsg)) e.limitKind = "minute";
+  if (isQuotaExceeded(finalMsg)) {
+    const isDaily = /per\s*day|PerDay|TPD|RPD/i.test(finalMsg);
+    e.limitKind = isDaily ? "daily" : "minute";
+  }
   throw e;
 }
 
