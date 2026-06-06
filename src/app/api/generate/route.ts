@@ -137,20 +137,6 @@ function isQuotaExceeded(msg: string): boolean {
   );
 }
 
-// Extract how many seconds to wait from a provider rate-limit error.
-// Gemini: `"retryDelay": "27s"` · Groq: `try again in 7.2s`. Falls back to 60s
-// (per-minute limits always reset within a minute).
-function parseRetrySeconds(msg: string): number {
-  const m =
-    msg.match(/retryDelay"?\s*:?\s*"?(\d+(?:\.\d+)?)s/i) ||
-    msg.match(/try again in (\d+(?:\.\d+)?)\s*s/i);
-  if (m) {
-    const s = Math.ceil(parseFloat(m[1]));
-    if (s > 0 && s <= 120) return s;
-  }
-  return 60;
-}
-
 // Generate with resilience. On ANY retryable error — whether a key's quota /
 // rate limit (429) or transient model overload (503) — move on to the next
 // (key × model) combination. A different key or model may succeed, so we never
@@ -169,6 +155,7 @@ async function generateWithFallback(
   );
 
   let lastErr: unknown;
+  let sawDaily = false; // any Gemini key hit its per-DAY cap (won't clear soon)
   const MAX_PASSES = 2;
   for (let pass = 1; pass <= MAX_PASSES; pass++) {
     for (let k = 0; k < geminiClients.length; k++) {
@@ -181,6 +168,7 @@ async function generateWithFallback(
         } catch (err: unknown) {
           lastErr = err;
           const msg = err instanceof Error ? err.message : "";
+          if (/per\s*day|PerDay/i.test(msg)) sawDaily = true;
           // Non-retryable error (bad request, auth, etc.) — stop immediately.
           if (!isQuotaExceeded(msg) && !isOverloaded(msg)) throw err;
           console.log(
@@ -215,7 +203,16 @@ async function generateWithFallback(
     }
   }
 
-  throw lastErr ?? new Error("All models unavailable");
+  // Tag the failure so the API can show the right short message:
+  // "daily" → Gemini's per-day cap is hit (wait until the reset);
+  // "minute" → a transient per-minute/token rate limit (wait ~60s).
+  const finalMsg = lastErr instanceof Error ? lastErr.message : "";
+  const e = new Error(finalMsg || "All models unavailable") as Error & {
+    limitKind?: "daily" | "minute";
+  };
+  if (sawDaily) e.limitKind = "daily";
+  else if (isQuotaExceeded(finalMsg)) e.limitKind = "minute";
+  throw e;
 }
 
 // Groq fallback via its OpenAI-compatible endpoint. Llama 3.3 70B handles Tamil
@@ -276,26 +273,22 @@ export async function POST(req: Request) {
     return Response.json({ output: text });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    const kind = (error as { limitKind?: "daily" | "minute" })?.limitKind;
     console.error("Gemini API error:", message);
-    // Gemini API key quota / billing limit reached — needs a fresh key or reset.
-    if (isQuotaExceeded(message)) {
-      // Distinguish a per-day exhaustion (won't clear by waiting a minute) from
-      // a per-minute rate limit.
-      const isDaily = /per\s*day|PerDay/i.test(message);
-      if (isDaily) {
-        return Response.json(
-          {
-            error:
-              "இன்றைய AI free limit முடிந்துவிட்டது 😔 இது நாளை மதியம் ~12:30 PM IST-க்கு refresh ஆகும். (Daily free quota used up — resets ~12:30 PM IST. Enable billing to remove this limit.)",
-          },
-          { status: 429 }
-        );
-      }
-      const wait = parseRetrySeconds(message);
+
+    // Daily quota used up — won't clear by waiting; comes back after the reset.
+    if (kind === "daily") {
+      return Response.json(
+        { error: "AI இன்று busy 😴 மதியம் 12:30 PM IST-க்கு பிறகு கிடைக்கும்." },
+        { status: 429 }
+      );
+    }
+    // Per-minute / token rate limit — clears within a minute.
+    if (kind === "minute" || isQuotaExceeded(message)) {
       return Response.json(
         {
-          error: `AI கொஞ்சம் busy 😅 ${wait} விநாடிகள் காத்திருந்து மீண்டும் முயற்சிக்கவும். வேலை செய்யாவிட்டால் இன்றைய free limit முடிந்திருக்கலாம் (~12:30 PM IST-க்கு refresh). (Wait ~${wait}s; if it persists, the daily limit is used up.)`,
-          retryAfter: wait,
+          error: "AI கொஞ்சம் busy 😅 60 விநாடிகள் கழித்து மீண்டும் முயற்சிக்கவும்.",
+          retryAfter: 60,
         },
         { status: 429 }
       );
