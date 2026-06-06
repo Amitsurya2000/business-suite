@@ -129,7 +129,11 @@ function isQuotaExceeded(msg: string): boolean {
   return (
     msg.includes("quota") ||
     msg.includes("billing") ||
-    msg.includes("RESOURCE_EXHAUSTED")
+    msg.includes("RESOURCE_EXHAUSTED") ||
+    // Groq rate-limit (429) messages — tokens/requests per minute.
+    msg.includes("Rate limit reached") ||
+    msg.includes("tokens per minute") ||
+    msg.includes("TPM")
   );
 }
 
@@ -249,7 +253,9 @@ export async function POST(req: Request) {
       [{ role: "user", parts: [{ text: user }] }],
       {
         temperature: temp,
-        maxOutputTokens: phase === "reflect" ? 200 : phase === "research" ? 4000 : 8000,
+        // Kept modest so each request stays well under free-tier per-minute
+        // token limits (Gemini & Groq), while still allowing rich output.
+        maxOutputTokens: phase === "reflect" ? 200 : phase === "research" ? 2048 : 4096,
       }
     );
 
@@ -262,7 +268,7 @@ export async function POST(req: Request) {
       return Response.json(
         {
           error:
-            "Gemini API key-ன் quota முடிந்துவிட்டது (free limit). சிறிது நேரம் கழித்து முயற்சிக்கவும், அல்லது billing-உடன் புதிய key சேர்க்கவும்.",
+            "AI request limit (per-minute) reached. ஒரு நிமிடம் கழித்து மீண்டும் முயற்சிக்கவும். (Free tier limit — wait a minute and retry.)",
         },
         { status: 429 }
       );
