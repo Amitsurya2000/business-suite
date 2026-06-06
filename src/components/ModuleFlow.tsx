@@ -155,7 +155,12 @@ async function callAPI(
   });
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(err.error || "Generation failed");
+    const e = new Error(err.error || "Generation failed") as Error & {
+      retryAfter?: number;
+    };
+    // Pass through the suggested wait time (seconds) for rate-limit errors.
+    if (typeof err.retryAfter === "number") e.retryAfter = err.retryAfter;
+    throw e;
   }
   return res.json();
 }
@@ -181,6 +186,7 @@ export function ModuleFlow({
   const [reflection, setReflection] = useState("");
   const [output, setOutput] = useState(existingOutput || "");
   const [error, setError] = useState("");
+  const [retryIn, setRetryIn] = useState(0); // rate-limit countdown (seconds)
   // Profile comes from the shared (InsForge-backed) context — never null.
   const { profile } = useProfile();
   const [copied, setCopied] = useState(false);
@@ -211,6 +217,21 @@ export function ModuleFlow({
       if (stepTimerRef.current) clearInterval(stepTimerRef.current);
     };
   }, []);
+
+  // Tick the rate-limit countdown down to 0 once per second.
+  useEffect(() => {
+    if (retryIn <= 0) return;
+    const t = setInterval(() => setRetryIn((s) => (s > 1 ? s - 1 : 0)), 1000);
+    return () => clearInterval(t);
+  }, [retryIn]);
+
+  // Show an error; if it's a rate-limit error, start the wait countdown.
+  const showError = (e: unknown) => {
+    const msg = e instanceof Error ? e.message : "ஏதோ தவறு ஏற்பட்டது. மீண்டும் முயற்சிக்கவும்.";
+    const secs = (e as { retryAfter?: number })?.retryAfter;
+    setError(msg);
+    setRetryIn(typeof secs === "number" ? secs : 0);
+  };
 
   const updateAnswer = (id: string, value: string) =>
     setAnswers((prev) => ({ ...prev, [id]: value }));
@@ -309,7 +330,7 @@ export function ModuleFlow({
       onSave(generated, answers);
     } catch (e) {
       completeAllSteps();
-      setError(e instanceof Error ? e.message : "ஏதோ தவறு ஏற்பட்டது. மீண்டும் முயற்சிக்கவும்.");
+      showError(e);
       setPhase("ask");
     }
   };
@@ -344,7 +365,7 @@ export function ModuleFlow({
       onSave(generated, answers);
     } catch (e) {
       completeAllSteps();
-      setError(e instanceof Error ? e.message : "ஏதோ தவறு ஏற்பட்டது.");
+      showError(e);
       setPhase("output");
     }
   };
@@ -435,7 +456,15 @@ export function ModuleFlow({
             ))}
 
             {error && (
-              <div className="bg-accent-red/10 border border-accent-red/30 rounded-xl p-4 text-sm text-accent-red">{error}</div>
+              <div className="bg-accent-red/10 border border-accent-red/30 rounded-xl p-4 text-sm text-accent-red">
+                {error}
+                {retryIn > 0 && (
+                  <div className="mt-2 flex items-center gap-2 text-accent-gold font-semibold">
+                    <span className="inline-block w-2 h-2 rounded-full bg-accent-gold animate-pulse" />
+                    {retryIn} விநாடிகளில் மீண்டும் முயற்சிக்கலாம்…
+                  </div>
+                )}
+              </div>
             )}
 
             <button
@@ -566,7 +595,15 @@ export function ModuleFlow({
             )}
 
             {error && (
-              <div className="bg-accent-red/10 border border-accent-red/30 rounded-xl p-4 text-sm text-accent-red">{error}</div>
+              <div className="bg-accent-red/10 border border-accent-red/30 rounded-xl p-4 text-sm text-accent-red">
+                {error}
+                {retryIn > 0 && (
+                  <div className="mt-2 flex items-center gap-2 text-accent-gold font-semibold">
+                    <span className="inline-block w-2 h-2 rounded-full bg-accent-gold animate-pulse" />
+                    {retryIn} விநாடிகளில் மீண்டும் முயற்சிக்கலாம்…
+                  </div>
+                )}
+              </div>
             )}
 
             <div className="flex items-center gap-3 pt-4 border-t border-border-default">

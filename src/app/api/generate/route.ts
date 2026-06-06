@@ -137,6 +137,20 @@ function isQuotaExceeded(msg: string): boolean {
   );
 }
 
+// Extract how many seconds to wait from a provider rate-limit error.
+// Gemini: `"retryDelay": "27s"` · Groq: `try again in 7.2s`. Falls back to 60s
+// (per-minute limits always reset within a minute).
+function parseRetrySeconds(msg: string): number {
+  const m =
+    msg.match(/retryDelay"?\s*:?\s*"?(\d+(?:\.\d+)?)s/i) ||
+    msg.match(/try again in (\d+(?:\.\d+)?)\s*s/i);
+  if (m) {
+    const s = Math.ceil(parseFloat(m[1]));
+    if (s > 0 && s <= 120) return s;
+  }
+  return 60;
+}
+
 // Generate with resilience. On ANY retryable error — whether a key's quota /
 // rate limit (429) or transient model overload (503) — move on to the next
 // (key × model) combination. A different key or model may succeed, so we never
@@ -265,10 +279,11 @@ export async function POST(req: Request) {
     console.error("Gemini API error:", message);
     // Gemini API key quota / billing limit reached — needs a fresh key or reset.
     if (isQuotaExceeded(message)) {
+      const wait = parseRetrySeconds(message);
       return Response.json(
         {
-          error:
-            "AI request limit (per-minute) reached. ஒரு நிமிடம் கழித்து மீண்டும் முயற்சிக்கவும். (Free tier limit — wait a minute and retry.)",
+          error: `AI கொஞ்சம் busy 😅 தயவுசெய்து ${wait} விநாடிகள் காத்திருந்து மீண்டும் முயற்சிக்கவும். (Please wait ~${wait}s and try again.)`,
+          retryAfter: wait,
         },
         { status: 429 }
       );
